@@ -1,0 +1,3 @@
+# SoundKeeper is a separate project. Do not commit its binaries.
+SoundKeeper*.exe
+soundkeeper*.7z
