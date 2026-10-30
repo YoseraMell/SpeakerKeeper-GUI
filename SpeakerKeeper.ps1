@@ -187,19 +187,29 @@ namespace SpeakerKeeperAudio
                         IAudioSessionControl2 ctl = s as IAudioSessionControl2;
                         if (ctl != null) ctl.GetProcessId(out pid);
                         if (excludePids.Contains(pid)) continue;
-                        if (!String.IsNullOrWhiteSpace(selectedAppName))
-                        {
-                            try
-                            {
-                                var appProcess = System.Diagnostics.Process.GetProcessById((int)pid);
-                                if (!String.Equals(appProcess.ProcessName, selectedAppName, StringComparison.OrdinalIgnoreCase)) continue;
-                            }
-                            catch { continue; }
-                        }
                         IAudioMeterInformation meter = s as IAudioMeterInformation;
                         if (meter == null) continue;
                         float p;
-                        if (meter.GetPeakValue(out p) == 0 && p > max) max = p;
+                        if (meter.GetPeakValue(out p) != 0 || p <= max) continue;
+                        // Inspect only processes with audio sessions, rather than scanning
+                        // every process on the machine on each polling interval.
+                        try
+                        {
+                            using (var appProcess = System.Diagnostics.Process.GetProcessById((int)pid))
+                            {
+                                string processName = appProcess.ProcessName;
+                                if (processName.StartsWith("SoundKeeper", StringComparison.OrdinalIgnoreCase)) continue;
+                                if (!String.IsNullOrWhiteSpace(selectedAppName) &&
+                                    !String.Equals(processName, selectedAppName, StringComparison.OrdinalIgnoreCase)) continue;
+                            }
+                        }
+                        catch
+                        {
+                            // All-app monitoring must still include sessions whose
+                            // process name is inaccessible (including system audio).
+                            if (!String.IsNullOrWhiteSpace(selectedAppName)) continue;
+                        }
+                        max = p;
                     }
                     catch { }
                     finally
@@ -284,6 +294,8 @@ $settings  = Read-Settings
 $settingsTime = if (Test-Path $settingsPath) { (Get-Item $settingsPath).LastWriteTime } else { $null }
 $lastSound = [datetime]::MinValue
 $myPid     = [uint32]$PID
+$exclude = New-Object 'System.Collections.Generic.HashSet[uint32]'
+[void]$exclude.Add($myPid)
 
 Write-Event 'SpeakerKeeper 起動しました。'
 Write-Event ("  音: {0}Hz / {1}%   余韻: {2}秒   検出しきい値: {3}" -f `
@@ -327,10 +339,6 @@ try {
         }
 
         # SoundKeeper 自身とこのスクリプトの音は除外して測る
-        $exclude = New-Object 'System.Collections.Generic.HashSet[uint32]'
-        [void]$exclude.Add($myPid)
-        foreach ($p in Get-Process -Name 'SoundKeeper*' -ErrorAction SilentlyContinue) { [void]$exclude.Add([uint32]$p.Id) }
-
         $peak = 0
         try { $peak = [SpeakerKeeperAudio.Meter]::GetOtherAppsPeak($exclude, [string]$settings.AppName) } catch { $peak = 0 }
 

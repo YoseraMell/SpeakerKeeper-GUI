@@ -1,7 +1,6 @@
 ﻿param([switch]$Minimized)
 
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
 
 $script:root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:engine = Join-Path $script:root 'SpeakerKeeper.ps1'
@@ -17,10 +16,20 @@ $script:worker = $null
 $script:exiting = $false
 $script:lastLogLength = -1
 
-New-Item -ItemType Directory -Force -Path $script:dataDir | Out-Null
+# Reject duplicate launches before loading WPF and WinForms.
 $created = $false
 $script:mutex = New-Object System.Threading.Mutex($true, 'Local\SpeakerKeeper_GUI_SingleInstance', [ref]$created)
-if (-not $created) { exit }
+if (-not $created) { $script:mutex.Dispose(); exit }
+try {
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
+    New-Item -ItemType Directory -Force -Path $script:dataDir | Out-Null
+} catch {
+    $script:mutex.ReleaseMutex()
+    $script:mutex.Dispose()
+    throw
+}
+$script:appListLoaded = $false
+$script:startupComplete = $false
 
 function Read-KeeperSettings {
     $s = @{
@@ -72,10 +81,10 @@ function Get-GuiTheme {
     if (Test-Path -LiteralPath $script:guiSettingsFile) {
         try {
             $p = Get-Content -LiteralPath $script:guiSettingsFile -Raw | ConvertFrom-Json
-            if ($p.theme -eq 'Light') { return 'Light' }
+            if ($p.theme -in @('Light', 'Dark', 'System')) { return [string]$p.theme }
         } catch { }
     }
-    return 'Dark'
+    return 'System'
 }
 
 function Save-GuiTheme([string]$theme) {
@@ -137,23 +146,28 @@ function Set-Startup([bool]$enabled) {
     }
 }
 
-function Refresh-AppList([string]$selectedName) {
+function Refresh-AppList([string]$selectedName, [switch]$SavedOnly) {
     $script:appBox.Items.Clear()
     $script:appBox.Items.Add([pscustomobject]@{ Display = 'すべてのアプリ'; ProcessName = '' }) | Out-Null
     $names = @{}
-    foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
-        try {
-            if ($p.MainWindowHandle -ne [IntPtr]::Zero -and -not [string]::IsNullOrWhiteSpace($p.ProcessName)) {
-                $names[$p.ProcessName] = $true
-            }
-        } catch { }
+    # Keep startup independent of the number of desktop processes.
+    if (-not $SavedOnly) {
+        foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
+            try {
+                if ($p.MainWindowHandle -ne [IntPtr]::Zero -and -not [string]::IsNullOrWhiteSpace($p.ProcessName)) {
+                    $names[$p.ProcessName] = $true
+                }
+            } catch { }
+            finally { $p.Dispose() }
+        }
+        $script:appListLoaded = $true
     }
     foreach ($name in @($names.Keys | Sort-Object)) {
         $script:appBox.Items.Add([pscustomobject]@{ Display = $name; ProcessName = $name }) | Out-Null
     }
     if ($selectedName -and -not $names.ContainsKey($selectedName)) {
         $script:appBox.Items.Add([pscustomobject]@{
-            Display = ($selectedName + ' (起動していません)')
+            Display = $(if ($SavedOnly) { $selectedName } else { $selectedName + ' (起動していません)' })
             ProcessName = $selectedName
         }) | Out-Null
     }
@@ -187,6 +201,16 @@ function Update-Log {
 }
 
 function Apply-Theme([string]$theme) {
+    if ($theme -eq 'System') {
+        try {
+            $light = [Microsoft.Win32.Registry]::GetValue(
+                'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+                'AppsUseLightTheme', 1)
+            $theme = if ($light -eq 0) { 'Dark' } else { 'Light' }
+        } catch { $theme = 'Light' }
+    }
+    # Reuse the current brushes unless the effective Windows/app theme changes.
+    if ($script:appliedTheme -eq $theme) { return }
     if ($theme -eq 'Light') {
         $palette = @{
             WindowBrush = '#F2F5F9'; CardBrush = '#FFFFFF'; FieldBrush = '#E9EDF4'
@@ -202,6 +226,7 @@ function Apply-Theme([string]$theme) {
         $color = [System.Windows.Media.ColorConverter]::ConvertFromString($palette[$name])
         $script:window.Resources[$name] = [System.Windows.Media.SolidColorBrush]::new($color)
     }
+    $script:appliedTheme = $theme
 }
 
 $xaml = @'
@@ -228,16 +253,28 @@ $xaml = @'
       <Setter Property="Padding" Value="8,6"/>
       <Setter Property="FontFamily" Value="Segoe UI"/>
     </Style>
+    <!-- Native Windows combo templates keep a light background even in app dark mode.
+         Keep their text and item surfaces light-theme matched in every app theme. -->
     <Style TargetType="ComboBox">
-      <Setter Property="Background" Value="{DynamicResource FieldBrush}"/>
-      <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-      <Setter Property="Padding" Value="8,5"/>
+      <Style.Resources>
+        <!-- Override the window TextBlock style for generated selection/item text. -->
+        <Style TargetType="TextBlock">
+          <Setter Property="Foreground" Value="#182334"/>
+          <Setter Property="FontFamily" Value="Segoe UI"/>
+        </Style>
+      </Style.Resources>
+      <Setter Property="Background" Value="#E9EDF4"/>
+      <Setter Property="Foreground" Value="#182334"/>
+      <Setter Property="BorderBrush" Value="#D7DFE9"/>
+      <Setter Property="Padding" Value="8,3"/>
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
       <Setter Property="FontFamily" Value="Segoe UI"/>
     </Style>
     <Style TargetType="ComboBoxItem">
-      <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-      <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
+      <Setter Property="Foreground" Value="#182334"/>
+      <Setter Property="Background" Value="#FFFFFF"/>
     </Style>
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
@@ -269,9 +306,10 @@ $xaml = @'
         <TextBlock Text="NZXT Relay Keeper" FontSize="23" FontWeight="SemiBold"/>
         <TextBlock Text="Speaker Power Management" Foreground="{DynamicResource SubtleBrush}" FontSize="12"/>
       </StackPanel>
-      <ComboBox x:Name="ThemeBox" Grid.Column="1" Margin="6,4,0,4">
-        <ComboBoxItem Content="Dark"/>
-        <ComboBoxItem Content="Light"/>
+      <ComboBox x:Name="ThemeBox" Grid.Column="1" Margin="6,4,0,4" SelectedValuePath="Tag">
+        <ComboBoxItem Content="ライト" Tag="Light"/>
+        <ComboBoxItem Content="ダーク" Tag="Dark"/>
+        <ComboBoxItem Content="システム" Tag="System"/>
       </ComboBox>
     </Grid>
     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
@@ -293,8 +331,8 @@ $xaml = @'
             <TextBlock Text="音声を検出するアプリ" FontSize="13" FontWeight="SemiBold"/>
             <Grid Margin="0,7,0,13">
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-              <ComboBox x:Name="AppBox" Grid.Column="0" DisplayMemberPath="Display" SelectedValuePath="ProcessName"/>
-              <Button x:Name="RefreshApps" Grid.Column="1" Content="更新" Margin="8,0,0,0"/>
+              <ComboBox x:Name="AppBox" Grid.Column="0" DisplayMemberPath="Display" SelectedValuePath="ProcessName" MaxDropDownHeight="240"/>
+              <Button x:Name="RefreshApps" Grid.Column="1" Content="更新" Margin="8,0,0,0" Height="32" Padding="12,3" VerticalAlignment="Center"/>
             </Grid>
             <TextBlock Text="対象の出力デバイス名 (空欄ですべて)" FontSize="12"/>
             <TextBox x:Name="DeviceBox" Margin="0,6,0,13"/>
@@ -363,18 +401,25 @@ try {
     $script:frequencyBox.Text = $settings.Frequency
     $script:amplitudeBox.Text = $settings.Amplitude
     $script:thresholdBox.Text = $settings.Threshold
-    Refresh-AppList $settings.AppName
+    Refresh-AppList $settings.AppName -SavedOnly
     $script:autostartBox.IsChecked = (Test-Path -LiteralPath $script:startupItem) -or (Test-Path -LiteralPath $script:legacyStartupItem)
-    $theme = Get-GuiTheme
-    $script:themeBox.SelectedIndex = if ($theme -eq 'Light') { 1 } else { 0 }
-    Apply-Theme $theme
+    $script:themePreference = Get-GuiTheme
+    $script:themeBox.SelectedValue = $script:themePreference
+    Apply-Theme $script:themePreference
 
     $script:themeBox.Add_SelectionChanged({
         if ($null -eq $script:window) { return }
-        $t = if ($script:themeBox.SelectedIndex -eq 1) { 'Light' } else { 'Dark' }
-        Apply-Theme $t
-        Save-GuiTheme $t
+        $script:themePreference = [string]$script:themeBox.SelectedValue
+        Apply-Theme $script:themePreference
+        Save-GuiTheme $script:themePreference
     })
+
+    $script:appBox.Add_DropDownOpened({
+        if (-not $script:appListLoaded) {
+            Refresh-AppList ([string]$script:appBox.SelectedValue)
+        }
+    })
+    $script:consoleExpander.Add_Expanded({ Update-Log })
 
     $script:window.FindName('RefreshApps').Add_Click({
         Refresh-AppList ([string]$script:appBox.SelectedValue)
@@ -427,11 +472,20 @@ try {
 
     $timer = New-Object Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(900)
-    $timer.Add_Tick({ Update-Status; if ($script:consoleExpander.IsExpanded) { Update-Log } })
+    $timer.Add_Tick({
+        if ($script:themePreference -eq 'System') { Apply-Theme 'System' }
+        Update-Status
+        if ($script:window.IsVisible -and $script:consoleExpander.IsExpanded) { Update-Log }
+    })
     $timer.Start()
-    Start-Monitoring
-    Update-Log
-    if ($Minimized) { $script:window.Add_ContentRendered({ $script:window.Hide() }) }
+    Update-Status
+    # Start the engine after the first frame; tray startup never scans apps or reads logs.
+    $script:window.Add_ContentRendered({
+        if ($script:startupComplete) { return }
+        $script:startupComplete = $true
+        if ($Minimized) { $script:window.Hide() }
+        Start-Monitoring
+    })
     $script:application = New-Object System.Windows.Application
     $script:application.ShutdownMode = [System.Windows.ShutdownMode]::OnMainWindowClose
     [void]$script:application.Run($script:window)

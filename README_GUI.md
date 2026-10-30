@@ -14,7 +14,7 @@ Windows-only compact WPF front end for the existing PowerShell SpeakerKeeper eng
 ## Controls
 
 - **監視を開始 / 監視を停止** — start and stop audio monitoring.
-- **Theme** — Dark or Light, persisted in `%LOCALAPPDATA%\NZXT-Relay-Keeper\gui.json`.
+- **Theme** — ライト (Light), ダーク (Dark), or システム (System), persisted in `%LOCALAPPDATA%\NZXT-Relay-Keeper\gui.json`. System follows the Windows app color mode, including changes while running. Existing Light/Dark preferences are preserved; new preferences default to System.
 - **Console / 動作履歴** — expand to see the last 120 logged messages; full persisted log at `%LOCALAPPDATA%\NZXT-Relay-Keeper\SpeakerKeeper.log`.
 - **× window button** — hide the window to the notification area; monitoring continues.
 - **Tray menu** — show window, toggle monitoring, or fully exit.
@@ -36,3 +36,12 @@ The PowerShell engine filters Windows audio sessions on the **current default pl
 - Running SoundKeeper may affect Windows system sleep while the keeper signal is active.
 - Exit is graceful during normal operation. Forced termination, crashes, or an existing independently started SoundKeeper instance cannot be guaranteed to clean up.
 - The GUI is **experimental** until validated on Windows with the intended speaker and audio interface; code creation alone is not proof of working audio/device behavior.
+
+## Startup and background work
+
+- The saved app selection is available immediately. Running desktop apps are enumerated when the app drop-down is first opened, or when **更新** is clicked.
+- Monitoring starts automatically after the first window frame is rendered, including tray startup. Closing and reopening the window does not restart monitoring.
+- Logs are loaded when the console is expanded, then refreshed while the window is visible. Tray operation does not poll the log.
+- Duplicate launches exit before loading the GUI assemblies. Audio polling checks processes associated with audio sessions instead of enumerating all SoundKeeper processes every 250 ms.
+
+Windows validation checklist: compare launch-to-first-frame time from the same local folder before/after; check normal and `--minimized` launch, saved app selection and Refresh, console reopening after tray use, monitoring stop/show/start, duplicate launch, and tray Exit. Verify default-device switching, all-app/system audio, selected-app audio, and exclusion of independently running SoundKeeper instances. Windows PowerShell and WPF startup costs still apply; no measured speedup is claimed without a Windows comparison.
