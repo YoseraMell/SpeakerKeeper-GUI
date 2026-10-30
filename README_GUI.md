@@ -7,7 +7,7 @@ Windows-only compact WPF front end for the existing PowerShell SpeakerKeeper eng
 1. Keep `SpeakerKeeper-GUI.ps1`, `SpeakerKeeper.ps1`, `settings.txt`, and `Launch-GUI.vbs` in the same folder.
 2. Keep a trusted matching `SoundKeeper64.exe` in that folder; the app launches it to emit a tiny sine wave as the existing engine did. The upstream download is https://veg.by/projects/soundkeeper.
 3. Double-click **`Launch-GUI.vbs`**. No console window is necessary.
-4. Set the output device name to the actual default Windows playback device (e.g., the MiniFuse output device shown in Windows Sound settings), or leave it blank to match any default device.
+4. Choose an output device from the Windows playback-device drop-down, or **すべての出力デバイス** (All output devices). The list loads on first opening; use its **更新** (Refresh) button after connecting a device. Monitoring operates when that device is the Windows default output; this selection does not change Windows audio routing. Previously saved device names/partial-name filters are preserved even if absent from the current list.
 5. Choose a running app from the app drop-down, or **すべてのアプリ** (All applications). Hit **更新** (Refresh) to reload currently visible running desktop applications.
 6. Click **設定を保存** (Save). Engine settings are reloaded automatically. GUI theme preference is saved immediately.
 

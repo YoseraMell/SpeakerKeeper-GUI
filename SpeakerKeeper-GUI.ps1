@@ -29,6 +29,7 @@ try {
     throw
 }
 $script:appListLoaded = $false
+$script:deviceListLoaded = $false
 $script:startupComplete = $false
 
 function Read-KeeperSettings {
@@ -173,6 +174,137 @@ function Refresh-AppList([string]$selectedName, [switch]$SavedOnly) {
     }
     $script:appBox.SelectedValue = $selectedName
     if ($script:appBox.SelectedIndex -lt 0) { $script:appBox.SelectedIndex = 0 }
+}
+
+function Get-OutputDeviceNames {
+    # Compile only on demand, keeping normal and tray startup lightweight.
+    if (-not ('SpeakerKeeperDevicePicker.Devices' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace SpeakerKeeperDevicePicker
+{
+    [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator
+    {
+        [PreserveSig] int EnumAudioEndpoints(int flow, uint states, out IMMDeviceCollection devices);
+    }
+    [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceCollection
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int Item(uint index, out IMMDevice device);
+    }
+    [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice
+    {
+        [PreserveSig] int Activate(ref Guid iid, int context, IntPtr parameters, out IntPtr instance);
+        [PreserveSig] int OpenPropertyStore(int access, out IPropertyStore store);
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct PropertyKey { public Guid format; public uint id; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct PropVariant
+    {
+        public ushort type, reserved1, reserved2, reserved3;
+        public IntPtr value, extra;
+    }
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PropertyKey key);
+        [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
+    }
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    class EnumeratorCom { }
+
+    public static class Devices
+    {
+        [DllImport("ole32.dll")]
+        static extern int PropVariantClear(ref PropVariant value);
+
+        // Active render endpoints use the same friendly names as the audio engine.
+        public static string[] GetNames()
+        {
+            object enumerator = new EnumeratorCom();
+            IMMDeviceCollection devices = null;
+            var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                Marshal.ThrowExceptionForHR(((IMMDeviceEnumerator)enumerator).EnumAudioEndpoints(0, 1, out devices));
+                uint count;
+                Marshal.ThrowExceptionForHR(devices.GetCount(out count));
+                for (uint i = 0; i < count; i++)
+                {
+                    IMMDevice device = null;
+                    IPropertyStore store = null;
+                    try
+                    {
+                        Marshal.ThrowExceptionForHR(devices.Item(i, out device));
+                        Marshal.ThrowExceptionForHR(device.OpenPropertyStore(0, out store));
+                        PropertyKey key = new PropertyKey();
+                        key.format = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0");
+                        key.id = 14; // PKEY_Device_FriendlyName
+                        PropVariant value;
+                        Marshal.ThrowExceptionForHR(store.GetValue(ref key, out value));
+                        try
+                        {
+                            string name = value.type == 31 ? Marshal.PtrToStringUni(value.value) : null;
+                            if (!String.IsNullOrWhiteSpace(name)) names.Add(name);
+                        }
+                        finally { PropVariantClear(ref value); }
+                    }
+                    catch (COMException) { } // An endpoint may disappear during enumeration.
+                    finally
+                    {
+                        if (store != null) Marshal.ReleaseComObject(store);
+                        if (device != null) Marshal.ReleaseComObject(device);
+                    }
+                }
+                var result = new string[names.Count];
+                names.CopyTo(result);
+                return result;
+            }
+            finally
+            {
+                if (devices != null) Marshal.ReleaseComObject(devices);
+                Marshal.ReleaseComObject(enumerator);
+            }
+        }
+    }
+}
+'@
+    }
+    return [SpeakerKeeperDevicePicker.Devices]::GetNames()
+}
+
+function Refresh-DeviceList([string]$selectedName, [switch]$SavedOnly) {
+    # Fetch before clearing so errors never discard the user's current selection.
+    $names = @()
+    if (-not $SavedOnly) {
+        try { $names = @(Get-OutputDeviceNames) }
+        catch {
+            [System.Windows.MessageBox]::Show(
+                ('出力デバイス一覧を取得できませんでした。更新から再試行してください。' + [Environment]::NewLine + $_.Exception.Message),
+                '出力デバイス') | Out-Null
+            return
+        }
+    }
+    $script:deviceBox.Items.Clear()
+    $script:deviceBox.Items.Add([pscustomobject]@{ Display = 'すべての出力デバイス'; DeviceName = '' }) | Out-Null
+    foreach ($name in $names) {
+        $script:deviceBox.Items.Add([pscustomobject]@{ Display = $name; DeviceName = $name }) | Out-Null
+    }
+    if ($selectedName -and $selectedName -notin $names) {
+        # Keep legacy partial-name filters and temporarily disconnected devices.
+        $script:deviceBox.Items.Add([pscustomobject]@{ Display = $selectedName; DeviceName = $selectedName }) | Out-Null
+    }
+    $script:deviceBox.SelectedValue = $selectedName
+    if ($script:deviceBox.SelectedIndex -lt 0) { $script:deviceBox.SelectedIndex = 0 }
+    $script:deviceListLoaded = -not $SavedOnly
 }
 
 function Update-Status {
@@ -334,8 +466,13 @@ $xaml = @'
               <ComboBox x:Name="AppBox" Grid.Column="0" DisplayMemberPath="Display" SelectedValuePath="ProcessName" MaxDropDownHeight="240"/>
               <Button x:Name="RefreshApps" Grid.Column="1" Content="更新" Margin="8,0,0,0" Height="32" Padding="12,3" VerticalAlignment="Center"/>
             </Grid>
-            <TextBlock Text="対象の出力デバイス名 (空欄ですべて)" FontSize="12"/>
-            <TextBox x:Name="DeviceBox" Margin="0,6,0,13"/>
+            <TextBlock Text="対象の出力デバイス" FontSize="12"/>
+            <Grid Margin="0,6,0,13">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <ComboBox x:Name="DeviceBox" Grid.Column="0" DisplayMemberPath="Display" SelectedValuePath="DeviceName"
+                        MaxDropDownHeight="240" ToolTip="選んだデバイスがWindowsの既定の出力先になっているときに動作します"/>
+              <Button x:Name="RefreshDevices" Grid.Column="1" Content="更新" Margin="8,0,0,0" Height="32" Padding="12,3" VerticalAlignment="Center"/>
+            </Grid>
             <Grid>
               <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
               <StackPanel Grid.Column="0" Margin="0,0,6,0">
@@ -396,7 +533,7 @@ try {
     $script:tray.Visible = $true
 
     $settings = Read-KeeperSettings
-    $script:deviceBox.Text = $settings.DeviceName
+    Refresh-DeviceList $settings.DeviceName -SavedOnly
     $script:lingerBox.Text = $settings.LingerSeconds
     $script:frequencyBox.Text = $settings.Frequency
     $script:amplitudeBox.Text = $settings.Amplitude
@@ -418,6 +555,14 @@ try {
         if (-not $script:appListLoaded) {
             Refresh-AppList ([string]$script:appBox.SelectedValue)
         }
+    })
+    $script:deviceBox.Add_DropDownOpened({
+        if (-not $script:deviceListLoaded) {
+            Refresh-DeviceList ([string]$script:deviceBox.SelectedValue)
+        }
+    })
+    $script:window.FindName('RefreshDevices').Add_Click({
+        Refresh-DeviceList ([string]$script:deviceBox.SelectedValue)
     })
     $script:consoleExpander.Add_Expanded({ Update-Log })
 
@@ -442,7 +587,7 @@ try {
                 }
                 $values[$entry[0]] = $n.ToString($inv)
             }
-            $values['DeviceName'] = $script:deviceBox.Text.Trim()
+            $values['DeviceName'] = [string]$script:deviceBox.SelectedValue
             $values['AppName'] = [string]$script:appBox.SelectedValue
             Set-Startup ([bool]$script:autostartBox.IsChecked)
             Write-KeeperSettings $values
