@@ -11,6 +11,10 @@ A Windows-only WPF front end for [SpeakerKeeper by shiro23437](https://github.co
 
 `settings.txt` is optional. GUI Save creates it; CLI users can copy `settings.example.txt`. Missing files use the upstream defaults: 300 Hz, 0.1% amplitude, 30-second linger, and a 0.001 threshold. Both modes share a parser with invariant-culture numbers and finite-value/range validation. Existing values, unknown keys, comments, and custom SoundKeeper paths are retained when saving. Settings writes use a temporary file and atomic replacement; the running engine reloads changes. Deleting the file restores defaults. Personal settings and temporary settings files are excluded from Git.
 
+## Upgrading an older checkout
+
+Older versions tracked `settings.txt`; this contribution removes it from version control. Before updating/replacing an old checkout, keep a copy of your personal file outside the checkout and restore it afterward. Git may refuse the update when that tracked file has local changes; preserve those changes rather than discarding them. Restored `settings.txt` is ignored by Git. The app does not overwrite an existing personal file on startup, and GUI Save retains existing/custom values.
+
 ## Controls and behavior
 
 - **監視を開始 / 監視を停止** starts/stops the GUI-owned worker. Both CLI and GUI use the same engine mutex. If another engine is already running, the new worker exits and the GUI returns to Stopped; inspect the console, stop the CLI, then start GUI monitoring. The GUI never claims ownership of the existing CLI worker.
@@ -32,7 +36,7 @@ The normal GUI shortcut is `SpeakerKeeper GUI.lnk`; an owned legacy `NZXT Relay 
 
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\Validate.ps1` for isolated regression checks. These parse the scripts and check defaults, first save/reload, preservation of configuration, locale handling, missing/failed dependency retry and recovery, log rotation, startup ownership using fake shortcuts, and scoped CLI process cleanup using fake processes. Both embedded C# interop declarations are also compiled without calling Windows APIs. They do not operate Windows Startup, WPF, or audio devices.
 
-Preparation checks passed locally on Linux with a temporary PowerShell 7.4.6 runtime: all PowerShell files parsed, both C# interop blocks compiled, and the isolated regression checks passed. XAML XML parsing/named-control checks and the scoped Git whitespace check also passed. SpeakerKeeper has no registered Atlas Compute job, so these checks ran locally. No Windows GUI/audio execution was performed.
+Preparation checks passed locally on Linux with a temporary PowerShell 7.4.6 runtime: all PowerShell files parsed, both C# interop blocks compiled, and the isolated regression checks passed. XAML XML parsing/named-control checks and the scoped Git whitespace check also passed. No Windows GUI/audio execution was performed.
 
 Before marking the upstream PR ready, validate on Windows PowerShell 5.1:
 

@@ -66,6 +66,8 @@ The app runs with built-in defaults when `settings.txt` is absent. For CLI custo
 | `SoundKeeper` | `SoundKeeper64.exe` | SoundKeeper executable name or path; use a matching trusted executable for your Windows architecture |
 | `AppName` | (empty) | Optional process name without `.exe`; empty monitors all apps on the default playback device |
 
+When upgrading an older checkout that tracked `settings.txt`, preserve a copy outside the checkout before updating, then restore it. Git may block the update if the old tracked file has local edits; do not discard your preferences. See the [upgrade notes](README_GUI.md#upgrading-an-older-checkout).
+
 The name for `DeviceName` is shown in the `1_test_run.bat` window as "**現在の出力先: ...**" (current output). Example: `Speakers (Realtek(R) Audio)`
 
 ### Finding the right tone
