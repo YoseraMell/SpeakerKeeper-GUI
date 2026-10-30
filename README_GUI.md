@@ -1,47 +1,44 @@
-# NZXT Relay Keeper — Desktop GUI (experimental)
+# SpeakerKeeper — Optional desktop GUI
 
-Windows-only compact WPF front end for the existing PowerShell SpeakerKeeper engine.
+A Windows-only WPF front end for [SpeakerKeeper by shiro23437](https://github.com/shiro23437/SpeakerKeeper), using the same PowerShell audio-monitoring engine. The existing CLI workflow remains available. Original MIT licensing and attribution are retained.
 
-## Start
+## Install and launch
 
-1. Keep `SpeakerKeeper-GUI.ps1`, `SpeakerKeeper.ps1`, `settings.txt`, and `Launch-GUI.vbs` in the same folder.
-2. Keep a trusted matching `SoundKeeper64.exe` in that folder; the app launches it to emit a tiny sine wave as the existing engine did. The upstream download is https://veg.by/projects/soundkeeper.
-3. Double-click **`Launch-GUI.vbs`**. No console window is necessary.
-4. Choose an output device from the Windows playback-device drop-down, or **すべての出力デバイス** (All output devices). The list loads on first opening; use its **更新** (Refresh) button after connecting a device. Monitoring operates when that device is the Windows default output; this selection does not change Windows audio routing. Previously saved device names/partial-name filters are preserved even if absent from the current list.
-5. Choose a running app from the app drop-down, or **すべてのアプリ** (All applications). Hit **更新** (Refresh) to reload currently visible running desktop applications.
-6. Click **設定を保存** (Save). Engine settings are reloaded automatically. GUI theme preference is saved immediately.
+1. Extract the entire repository, including `tools/`, to a writable folder. Windows 10/11 with Windows PowerShell 5.1 and WPF is required. No PowerShell module installation is needed.
+2. Download a trusted SoundKeeper executable separately from [the author's website](https://veg.by/projects/soundkeeper). Put `SoundKeeper64.exe` alongside the scripts, or set `SoundKeeper=` to a matching executable name/path for your architecture. No third-party binaries are included in the contribution.
+3. Double-click `Launch-GUI.vbs`. It launches Windows PowerShell with `-NoProfile -STA` and hides the console. If Windows has disabled VBScript/Windows Script Host, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\SpeakerKeeper-GUI.ps1` from this folder instead.
+4. Choose the application and output device, adjust settings, and click **設定を保存** (Save).
 
-## Controls
+`settings.txt` is optional. GUI Save creates it; CLI users can copy `settings.example.txt`. Missing files use the upstream defaults: 300 Hz, 0.1% amplitude, 30-second linger, and a 0.001 threshold. Both modes share a parser with invariant-culture numbers and finite-value/range validation. Existing values, unknown keys, comments, and custom SoundKeeper paths are retained when saving. Settings writes use a temporary file and atomic replacement; the running engine reloads changes. Deleting the file restores defaults. Personal settings and temporary settings files are excluded from Git.
 
-- **監視を開始 / 監視を停止** — start and stop audio monitoring.
-- **Theme** — ライト (Light), ダーク (Dark), or システム (System), persisted in `%LOCALAPPDATA%\NZXT-Relay-Keeper\gui.json`. System follows the Windows app color mode, including changes while running. Existing Light/Dark preferences are preserved; new preferences default to System.
-- **Console / 動作履歴** — expand to see the last 120 logged messages; full persisted log at `%LOCALAPPDATA%\NZXT-Relay-Keeper\SpeakerKeeper.log`.
-- **× window button** — hide the window to the notification area; monitoring continues.
-- **Tray menu** — show window, toggle monitoring, or fully exit.
-- **Windowsログイン時に起動** — create the current-user Startup shortcut. The app starts hidden in the tray on future logins. Saving the setting replaces the old direct-engine Startup shortcut to avoid competing copies.
+## Controls and behavior
 
-`2_add_to_startup.bat` also registers and launches the GUI in the tray; `3_remove_from_startup.bat` removes autostart. To stop a *running* GUI after unregistering autostart, use the tray icon's **終了** action.
+- **監視を開始 / 監視を停止** starts/stops the GUI-owned worker. Both CLI and GUI use the same engine mutex. If another engine is already running, the new worker exits and the GUI returns to Stopped; inspect the console, stop the CLI, then start GUI monitoring. The GUI never claims ownership of the existing CLI worker.
+- The application selector lists visible desktop processes by process name. Empty `AppName` means all apps. Lists are loaded on first opening and can be refreshed after launching an app or connecting a device. Remembered values remain available when absent from a list.
+- The device selector uses active Windows playback endpoints. **すべての出力デバイス** means any default output. A selected device is a name filter on the **current default playback device**, not a Windows routing change. Existing partial-name filters remain valid. Identically named devices are grouped by name.
+- Themes: **ライト / ダーク / システム** (Light/Dark/System). System follows the Windows app color setting while running. Preferences are stored in `%LOCALAPPDATA%\NZXT-Relay-Keeper\gui.json` for compatibility with earlier GUI versions. The dropdowns deliberately retain light surfaces with dark text for native Windows-template contrast.
+- **Console / 動作履歴** shows the last 120 messages. Logs refresh only while expanded and visible. `%LOCALAPPDATA%\NZXT-Relay-Keeper\SpeakerKeeper.log` rotates at 1 MiB, retaining one `.old` file. A missing/inaccessible SoundKeeper executable produces actionable diagnostics, suppresses repeated identical errors, and retries at most once every 30 seconds while audio is active. Recovery is automatic after the dependency becomes available; saving settings resets the retry delay.
+- Closing the window hides it to the notification area. The tray menu can show the window, toggle monitoring, or **終了** (Exit). Normal exit signals and waits for its worker; forced cleanup is restricted to that worker and its SoundKeeper children.
 
-## App selection semantics
+## CLI and GUI startup
 
-The drop-down contains visible, currently running desktop processes **by process name** (e.g. `chrome`, `spotify`). It does not list every background-only or future process. A remembered process can remain selected when it is not running. Refresh the list when launching a new app.
+The original `1_test_run.bat`, `2_add_to_startup.bat`, and `3_remove_from_startup.bat` continue to run/register/remove the CLI. CLI removal also stops this installation's CLI engine and its children, never unrelated SoundKeeper processes or GUI workers.
 
-The PowerShell engine filters Windows audio sessions on the **current default playback device** by that process name. In `settings.txt`, an empty `AppName=` means the previous behavior: audio from any app can trigger SoundKeeper. A selected app must produce sound through the default playback endpoint and expose an audio session with a matching process name to trigger the signal.
+GUI startup uses its checkbox or **`4_add_gui_to_startup.bat`** (register and launch in the tray). **`5_remove_gui_from_startup.bat`** unregisters GUI startup; it does not stop a running GUI. Exit through the tray menu. `tools/gui-startup.ps1 -Mode add -Launch` and `-Mode remove` are the equivalent script entry points.
 
-## Existing behavior and limitations
+The normal GUI shortcut is `SpeakerKeeper GUI.lnk`; an owned legacy `NZXT Relay Keeper.lnk` is reused. `SpeakerKeeper.lnk` remains the CLI shortcut. Enabling either mode refuses to replace the other mode's shortcut. Disable the old registration explicitly before enabling the other mode. Same-name shortcuts for another installation are not overwritten or deleted. Existing settings and shortcuts are not silently migrated. Stop the currently running engine when switching modes; the shared mutex prevents duplicate monitoring.
 
-- Existing `1_test_run.bat` and direct `SpeakerKeeper.ps1` execution still work. They also read the new optional `AppName` setting.
-- When no application audio is detected, the engine stops SoundKeeper after `LingerSeconds`.
-- This approach cannot prevent the **very first wake-up fade-in** after a long period of absolute silence; it starts generating the quiet signal *after* detecting other application audio.
-- Running SoundKeeper may affect Windows system sleep while the keeper signal is active.
-- Exit is graceful during normal operation. Forced termination, crashes, or an existing independently started SoundKeeper instance cannot be guaranteed to clean up.
-- The GUI is **experimental** until validated on Windows with the intended speaker and audio interface; code creation alone is not proof of working audio/device behavior.
+## Validation and known limitations
 
-## Startup and background work
+Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\Validate.ps1` for isolated regression checks. These parse the scripts and check defaults, first save/reload, preservation of configuration, locale handling, missing/failed dependency retry and recovery, log rotation, startup ownership using fake shortcuts, and scoped CLI process cleanup using fake processes. Both embedded C# interop declarations are also compiled without calling Windows APIs. They do not operate Windows Startup, WPF, or audio devices.
 
-- The saved app selection is available immediately. Running desktop apps are enumerated when the app drop-down is first opened, or when **更新** is clicked.
-- Monitoring starts automatically after the first window frame is rendered, including tray startup. Closing and reopening the window does not restart monitoring.
-- Logs are loaded when the console is expanded, then refreshed while the window is visible. Tray operation does not poll the log.
-- Duplicate launches exit before loading the GUI assemblies. Audio polling checks processes associated with audio sessions instead of enumerating all SoundKeeper processes every 250 ms.
+Preparation checks passed locally on Linux with a temporary PowerShell 7.4.6 runtime: all PowerShell files parsed, both C# interop blocks compiled, and the isolated regression checks passed. XAML XML parsing/named-control checks and the scoped Git whitespace check also passed. SpeakerKeeper has no registered Atlas Compute job, so these checks ran locally. No Windows GUI/audio execution was performed.
 
-Windows validation checklist: compare launch-to-first-frame time from the same local folder before/after; check normal and `--minimized` launch, saved app selection and Refresh, console reopening after tray use, monitoring stop/show/start, duplicate launch, and tray Exit. Verify default-device switching, all-app/system audio, selected-app audio, and exclusion of independently running SoundKeeper instances. Windows PowerShell and WPF startup costs still apply; no measured speedup is claimed without a Windows comparison.
+Before marking the upstream PR ready, validate on Windows PowerShell 5.1:
+
+- Launch normally and with `--minimized`, show/hide from the tray, stop/start monitoring, duplicate launch, and Exit. Check the selected colors and layout in all themes.
+- First run with no personal settings, Save, reload, edit the CLI file, remove it, and preserve existing/custom values.
+- Register/remove CLI and GUI startup separately, verify sign-in launch, conflict diagnostics, and protection of unrelated/legacy shortcuts.
+- Verify active-device listing, default-device switching, selected-app/system audio, and SoundKeeper exclusion. Verify linger timing, graceful and forced child cleanup, missing/inaccessible dependency diagnostics, bounded logs, and recovery.
+
+Windows GUI execution, Windows Script Host/shortcut integration, real child-process handling, sign-in behavior, and audio/hardware behavior are unverified in the Linux preparation environment. PowerShell 7 syntax/logic checks on Linux do not establish Windows PowerShell 5.1 runtime compatibility. The first wake-up fade-in after complete silence is still possible; SoundKeeper can affect automatic system sleep while active. A crash or external forced termination cannot guarantee cleanup. Windows installation/policies must permit scripts and, for the VBS launcher, Windows Script Host.

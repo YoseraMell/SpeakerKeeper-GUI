@@ -10,8 +10,8 @@ $script:dataDir = Join-Path $env:LOCALAPPDATA 'NZXT-Relay-Keeper'
 $script:logFile = Join-Path $script:dataDir 'SpeakerKeeper.log'
 $script:guiSettingsFile = Join-Path $script:dataDir 'gui.json'
 $script:stopFile = Join-Path $script:dataDir ('stop-' + $PID + '.signal')
-$script:startupItem = Join-Path ([Environment]::GetFolderPath('Startup')) 'NZXT Relay Keeper.lnk'
-$script:legacyStartupItem = Join-Path ([Environment]::GetFolderPath('Startup')) 'SpeakerKeeper.lnk'
+. (Join-Path $script:root 'tools\Settings.ps1')
+. (Join-Path $script:root 'tools\Startup.Common.ps1')
 $script:worker = $null
 $script:exiting = $false
 $script:lastLogLength = -1
@@ -33,20 +33,9 @@ $script:deviceListLoaded = $false
 $script:startupComplete = $false
 
 function Read-KeeperSettings {
-    $s = @{
-        Frequency = '500'
-        Amplitude = '0.075'
-        LingerSeconds = '60'
-        Threshold = '0.001'
-        DeviceName = ''
-        AppName = ''
-    }
-    if (Test-Path -LiteralPath $script:settingsFile) {
-        foreach ($line in [System.IO.File]::ReadAllLines($script:settingsFile)) {
-            if ($line -match '^\s*([A-Za-z]+)\s*=(.*)$' -and $s.ContainsKey($Matches[1])) {
-                $s[$Matches[1]] = $Matches[2].Trim()
-            }
-        }
+    $s = Read-KeeperConfiguration $script:settingsFile
+    foreach ($key in @('Frequency', 'Amplitude', 'LingerSeconds', 'Threshold')) {
+        $s[$key] = $s[$key].ToString([System.Globalization.CultureInfo]::InvariantCulture)
     }
     return $s
 }
@@ -73,9 +62,15 @@ function Write-KeeperSettings([hashtable]$updates) {
     foreach ($key in $updates.Keys) {
         if (-not $seen.ContainsKey($key)) { $out.Add($key + '=' + $updates[$key]) }
     }
-    $tmp = $script:settingsFile + '.tmp'
-    [System.IO.File]::WriteAllLines($tmp, $out, (New-Object System.Text.UTF8Encoding($true)))
-    Move-Item -LiteralPath $tmp -Destination $script:settingsFile -Force
+    $tmp = $script:settingsFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [System.IO.File]::WriteAllLines($tmp, $out, (New-Object System.Text.UTF8Encoding($true)))
+        if ([System.IO.File]::Exists($script:settingsFile)) {
+            [System.IO.File]::Replace($tmp, $script:settingsFile, [System.Management.Automation.Language.NullString]::Value)
+        } else { [System.IO.File]::Move($tmp, $script:settingsFile) }
+    } finally {
+        if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) }
+    }
 }
 
 function Get-GuiTheme {
@@ -98,6 +93,7 @@ function Is-Monitoring {
 
 function Start-Monitoring {
     if (Is-Monitoring) { return }
+    if ($null -ne $script:worker) { $script:worker.Dispose(); $script:worker = $null }
     if (-not (Test-Path -LiteralPath $script:engine)) {
         [System.Windows.MessageBox]::Show('SpeakerKeeper.ps1 was not found.') | Out-Null
         return
@@ -105,14 +101,29 @@ function Start-Monitoring {
     Remove-Item -LiteralPath $script:stopFile -Force -ErrorAction SilentlyContinue
     $ps = Join-Path $PSHOME 'powershell.exe'
     $args = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -StopFile "{1}" -LogFile "{2}"' -f $script:engine, $script:stopFile, $script:logFile
-    $script:worker = Start-Process -FilePath $ps -ArgumentList $args -WindowStyle Hidden -PassThru
+    try {
+        $script:worker = Start-Process -FilePath $ps -ArgumentList $args -WindowStyle Hidden -PassThru
+    } catch {
+        [System.Windows.MessageBox]::Show($_.Exception.Message, 'Unable to start monitoring') | Out-Null
+    }
     Update-Status
 }
 
 function Stop-Monitoring {
-    if (-not (Is-Monitoring)) { return }
-    [System.IO.File]::WriteAllText($script:stopFile, 'stop')
-    if (-not $script:worker.WaitForExit(3000)) {
+    if ($null -eq $script:worker) { return }
+    if ($script:worker.HasExited) {
+        $script:worker.Dispose()
+        $script:worker = $null
+        Remove-Item -LiteralPath $script:stopFile -Force -ErrorAction SilentlyContinue
+        Update-Status
+        return
+    }
+    $signaled = $false
+    try {
+        [System.IO.File]::WriteAllText($script:stopFile, 'stop')
+        $signaled = $true
+    } catch { }
+    if (-not $signaled -or -not $script:worker.WaitForExit(3000)) {
         # Only clean up the SoundKeeper children of our worker, never all soundkeepers on the PC.
         try {
             $children = @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $script:worker.Id) -ErrorAction SilentlyContinue)
@@ -131,20 +142,8 @@ function Stop-Monitoring {
 }
 
 function Set-Startup([bool]$enabled) {
-    if ($enabled) {
-        if (-not (Test-Path -LiteralPath $script:launcher)) { throw 'Launch-GUI.vbs is missing.' }
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($script:startupItem)
-        $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-        $shortcut.Arguments = ('"{0}" --minimized' -f $script:launcher)
-        $shortcut.WorkingDirectory = $script:root
-        $shortcut.Description = 'NZXT Relay Keeper GUI (tray startup)'
-        $shortcut.Save()
-        Remove-Item -LiteralPath $script:legacyStartupItem -Force -ErrorAction SilentlyContinue
-    } else {
-        Remove-Item -LiteralPath $script:startupItem -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $script:legacyStartupItem -Force -ErrorAction SilentlyContinue
-    }
+    $mode = if ($enabled) { 'add' } else { 'remove' }
+    Set-KeeperStartup -Root $script:root -Kind Gui -Mode $mode
 }
 
 function Refresh-AppList([string]$selectedName, [switch]$SavedOnly) {
@@ -539,7 +538,12 @@ try {
     $script:amplitudeBox.Text = $settings.Amplitude
     $script:thresholdBox.Text = $settings.Threshold
     Refresh-AppList $settings.AppName -SavedOnly
-    $script:autostartBox.IsChecked = (Test-Path -LiteralPath $script:startupItem) -or (Test-Path -LiteralPath $script:legacyStartupItem)
+    $script:autostartBox.IsChecked = $false
+    foreach ($name in @(Get-KeeperStartupNames 'Gui')) {
+        if (Test-KeeperShortcut (Join-Path (Get-KeeperStartupFolder) $name) $script:root 'Gui') {
+            $script:autostartBox.IsChecked = $true
+        }
+    }
     $script:themePreference = Get-GuiTheme
     $script:themeBox.SelectedValue = $script:themePreference
     Apply-Theme $script:themePreference
@@ -548,7 +552,8 @@ try {
         if ($null -eq $script:window) { return }
         $script:themePreference = [string]$script:themeBox.SelectedValue
         Apply-Theme $script:themePreference
-        Save-GuiTheme $script:themePreference
+        try { Save-GuiTheme $script:themePreference }
+        catch { [System.Windows.MessageBox]::Show($_.Exception.Message, 'Unable to save theme') | Out-Null }
     })
 
     $script:appBox.Add_DropDownOpened({
@@ -634,10 +639,14 @@ try {
     $script:application = New-Object System.Windows.Application
     $script:application.ShutdownMode = [System.Windows.ShutdownMode]::OnMainWindowClose
     [void]$script:application.Run($script:window)
+} catch {
+    [System.Windows.MessageBox]::Show($_.Exception.Message, 'SpeakerKeeper GUI error') | Out-Null
+    throw
 } finally {
     if ($null -ne $timer) { $timer.Stop() }
     try { Stop-Monitoring } catch { }
     if ($null -ne $script:tray) { $script:tray.Visible = $false; $script:tray.Dispose() }
+    if ($null -ne $menu) { $menu.Dispose() }
     $script:mutex.ReleaseMutex()
     $script:mutex.Dispose()
 }

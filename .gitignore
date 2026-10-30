@@ -4,3 +4,4 @@ soundkeeper*.7z
 
 # Per-user audio settings.
 /settings.txt
+settings.txt.*.tmp
