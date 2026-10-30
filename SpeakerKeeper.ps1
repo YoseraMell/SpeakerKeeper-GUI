@@ -1,4 +1,6 @@
-﻿# ============================================================
+﻿param([string]$StopFile = '', [string]$LogFile = '')
+
+# ============================================================
 #  SpeakerKeeper
 #  他のアプリ(ブラウザ・ゲームなど)から音が出ている間だけ
 #  SoundKeeper で小さなサイン波を流し、スピーカーのオートスリープを防ぐ。
@@ -11,11 +13,24 @@ $ErrorActionPreference = 'Stop'
 $scriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $scriptDir 'settings.txt'
 
+# ---- Optional GUI console logging; direct BAT entrypoints still use stdout ----
+function Write-Event([string]$message) {
+    $entry = ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $message)
+    Write-Host $entry
+    if ($LogFile -ne '') {
+        try {
+            $parent = Split-Path -Parent $LogFile
+            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            Add-Content -LiteralPath $LogFile -Value $entry -Encoding UTF8
+        } catch { }
+    }
+}
+
 # ---- 二重起動防止 ----
 $createdNew = $false
 $mutex = New-Object System.Threading.Mutex($true, 'Local\SpeakerKeeper_SingleInstance', [ref]$createdNew)
 if (-not $createdNew) {
-    Write-Host 'SpeakerKeeper はすでに起動しています。'
+    Write-Event 'SpeakerKeeper はすでに起動しています。'
     exit
 }
 
@@ -142,7 +157,7 @@ namespace SpeakerKeeperAudio
         }
 
         // 指定したプロセスID以外のアプリが出している音の最大レベル(0〜1)を返す
-        public static float GetOtherAppsPeak(HashSet<uint> excludePids)
+        public static float GetOtherAppsPeak(HashSet<uint> excludePids, string selectedAppName)
         {
             float max = 0f;
             object enumObj = new MMDeviceEnumeratorCom();
@@ -172,6 +187,15 @@ namespace SpeakerKeeperAudio
                         IAudioSessionControl2 ctl = s as IAudioSessionControl2;
                         if (ctl != null) ctl.GetProcessId(out pid);
                         if (excludePids.Contains(pid)) continue;
+                        if (!String.IsNullOrWhiteSpace(selectedAppName))
+                        {
+                            try
+                            {
+                                var appProcess = System.Diagnostics.Process.GetProcessById((int)pid);
+                                if (!String.Equals(appProcess.ProcessName, selectedAppName, StringComparison.OrdinalIgnoreCase)) continue;
+                            }
+                            catch { continue; }
+                        }
                         IAudioMeterInformation meter = s as IAudioMeterInformation;
                         if (meter == null) continue;
                         float p;
@@ -200,12 +224,13 @@ namespace SpeakerKeeperAudio
 # ---- 設定の読み込み ----
 function Read-Settings {
     $s = @{
-        Frequency     = 300
-        Amplitude     = 0.1
-        LingerSeconds = 30
+        Frequency     = 500
+        Amplitude     = 0.075
+        LingerSeconds = 60
         Threshold     = 0.001
         SoundKeeper   = 'SoundKeeper64.exe'
         DeviceName    = ''
+        AppName       = ''
     }
     if (Test-Path $settingsPath) {
         foreach ($line in Get-Content -Path $settingsPath -Encoding UTF8) {
@@ -215,13 +240,13 @@ function Read-Settings {
             if ($kv.Count -ne 2) { continue }
             $key = $kv[0].Trim(); $val = $kv[1].Trim()
             if (-not $s.ContainsKey($key)) { continue }
-            if ($key -eq 'SoundKeeper' -or $key -eq 'DeviceName') { $s[$key] = $val; continue }
+            if ($key -eq 'SoundKeeper' -or $key -eq 'DeviceName' -or $key -eq 'AppName') { $s[$key] = $val; continue }
             $num = 0.0
             if ([double]::TryParse($val, [System.Globalization.NumberStyles]::Float,
                                    [System.Globalization.CultureInfo]::InvariantCulture, [ref]$num)) {
                 $s[$key] = $num
             } else {
-                Write-Host "settings.txt の $key の値が読めません: $val (初期値を使います)"
+                Write-Event "settings.txt の $key の値が読めません: $val (初期値を使います)"
             }
         }
     }
@@ -237,12 +262,12 @@ $keeperProc = $null
 
 function Start-Keeper($s) {
     if (-not (Test-Path $s.SoundKeeperPath)) {
-        Write-Host "SoundKeeper が見つかりません: $($s.SoundKeeperPath)"
+        Write-Event "SoundKeeper が見つかりません: $($s.SoundKeeperPath)"
         return $null
     }
     $argLine = "sine -f $(Get-Inv $s.Frequency) -a $(Get-Inv $s.Amplitude)"
     $p = Start-Process -FilePath $s.SoundKeeperPath -ArgumentList $argLine -WindowStyle Hidden -PassThru
-    Write-Host ("{0:HH:mm:ss}  音を検出 → SoundKeeper 開始 ({1})" -f (Get-Date), $argLine)
+    Write-Event ("{0:HH:mm:ss}  音を検出 → SoundKeeper 開始 ({1})" -f (Get-Date), $argLine)
     return $p
 }
 
@@ -250,7 +275,7 @@ function Stop-Keeper([string]$reason) {
     if ($script:keeperProc -ne $null) {
         try { if (-not $script:keeperProc.HasExited) { $script:keeperProc.Kill() } } catch { }
         $script:keeperProc = $null
-        Write-Host ("{0:HH:mm:ss}  {1} → SoundKeeper 停止" -f (Get-Date), $reason)
+        Write-Event ("{0:HH:mm:ss}  {1} → SoundKeeper 停止" -f (Get-Date), $reason)
     }
 }
 
@@ -260,26 +285,27 @@ $settingsTime = if (Test-Path $settingsPath) { (Get-Item $settingsPath).LastWrit
 $lastSound = [datetime]::MinValue
 $myPid     = [uint32]$PID
 
-Write-Host 'SpeakerKeeper 起動しました。'
-Write-Host ("  音: {0}Hz / {1}%   余韻: {2}秒   検出しきい値: {3}" -f `
+Write-Event 'SpeakerKeeper 起動しました。'
+Write-Event ("  音: {0}Hz / {1}%   余韻: {2}秒   検出しきい値: {3}" -f `
     (Get-Inv $settings.Frequency), (Get-Inv $settings.Amplitude), $settings.LingerSeconds, (Get-Inv $settings.Threshold))
 if ($settings.DeviceName -ne '') {
-    Write-Host ("  対象デバイス: 名前に「{0}」を含む出力先のときだけ動作" -f $settings.DeviceName)
+    Write-Event ("  対象デバイス: 名前に「{0}」を含む出力先のときだけ動作" -f $settings.DeviceName)
 } else {
-    Write-Host '  対象デバイス: 指定なし(どの出力先でも動作)'
+    Write-Event '  対象デバイス: 指定なし(どの出力先でも動作)'
 }
-Write-Host '  (このウィンドウを閉じると終了します)'
+Write-Event '  (このウィンドウを閉じると終了します)'
 $lastDevice = $null
 
 try {
     while ($true) {
+        if ($StopFile -ne '' -and (Test-Path -LiteralPath $StopFile)) { break }
         # 設定ファイルが保存し直されたら読み込み直す
         if (Test-Path $settingsPath) {
             $t = (Get-Item $settingsPath).LastWriteTime
             if ($t -ne $settingsTime) {
                 $settingsTime = $t
                 $settings = Read-Settings
-                Write-Host ("{0:HH:mm:ss}  settings.txt を読み込み直しました ({1}Hz / {2}% / 余韻 {3}秒)" -f `
+                Write-Event ("{0:HH:mm:ss}  settings.txt を読み込み直しました ({1}Hz / {2}% / 余韻 {3}秒)" -f `
                     (Get-Date), (Get-Inv $settings.Frequency), (Get-Inv $settings.Amplitude), $settings.LingerSeconds)
                 Stop-Keeper '設定変更'
             }
@@ -290,7 +316,7 @@ try {
         try { $device = [SpeakerKeeperAudio.Meter]::GetDefaultDeviceName() } catch { $device = '' }
         if ($device -ne $lastDevice) {
             $lastDevice = $device
-            Write-Host ("{0:HH:mm:ss}  現在の出力先: {1}" -f (Get-Date), $device)
+            Write-Event ("{0:HH:mm:ss}  現在の出力先: {1}" -f (Get-Date), $device)
         }
         $isTarget = ($settings.DeviceName -eq '') -or $device.Contains($settings.DeviceName)
         if (-not $isTarget) {
@@ -306,7 +332,7 @@ try {
         foreach ($p in Get-Process -Name 'SoundKeeper*' -ErrorAction SilentlyContinue) { [void]$exclude.Add([uint32]$p.Id) }
 
         $peak = 0
-        try { $peak = [SpeakerKeeperAudio.Meter]::GetOtherAppsPeak($exclude) } catch { $peak = 0 }
+        try { $peak = [SpeakerKeeperAudio.Meter]::GetOtherAppsPeak($exclude, [string]$settings.AppName) } catch { $peak = 0 }
 
         $now = Get-Date
         if ($peak -gt $settings.Threshold) {

@@ -1,27 +1,27 @@
-﻿# SpeakerKeeper settings / 設定
-# Edit the values after "=" and save. Changes apply automatically, even while running.
-# 「=」の右側を書き換えて保存すると、動作中でも自動で反映されます。
+﻿# SpeakerKeeper の設定
+# 「=」の右側の数字を書き換えて保存すると、動作中でも自動で反映されます。
 
-# Tone frequency in Hz / 鳴らす音の周波数(Hz)
-Frequency=300
+# 鳴らす音の周波数(Hz)
+Frequency=500
 
-# Tone amplitude in percent (0.1 = 0.1%) / 鳴らす音の大きさ(%)
-Amplitude=0.1
+# 鳴らす音の大きさ(%)  例: 0.075 = 0.075%
+Amplitude=0.075
 
-# Seconds to keep playing after other audio stops / 音が止まってから鳴らし続ける秒数
-LingerSeconds=30
+# 音が止まってから鳴らし続ける時間(秒)  例: 60 = 1分
+LingerSeconds=60
 
-# Level (0-1) treated as "audio is playing". Usually no need to change.
-# Raise it (e.g. 0.01) if short notification sounds trigger it.
 # 「音が出ている」と判断するレベル(0〜1)。通常は変更不要
+#  ちょっとした通知音などでも反応してしまう場合は 0.01 などに上げる
 Threshold=0.001
 
-# Only run while the default output device name contains this text.
-# Copy the name shown as "現在の出力先" (current output) in 1_test_run.bat.
-# Leave empty to run on any output device.
-# この文字を名前に含む出力先のときだけ動作。空欄ならすべての出力先で動作
-# 例 / Example: DeviceName=スピーカー (Realtek(R) Audio)
-DeviceName=
+# 動作させる出力デバイス(この文字を名前に含む出力先のときだけ動く)
+#  名前は 1_test_run.bat の画面の「現在の出力先: ～」に表示されるものをコピー
+#  空欄(DeviceName=)にすると、どの出力先でも動作
+DeviceName=スピーカー (Realtek(R) Audio)
 
-# SoundKeeper executable in this folder / SoundKeeper の実行ファイル名
+# SoundKeeper の実行ファイル名(このフォルダに置く)
 SoundKeeper=SoundKeeper64.exe
+
+# 監視するアプリのプロセス名。空欄ですべてのアプリを監視。
+# GUIから実行中アプリを選択すると自動更新されます。
+AppName=
